@@ -11,22 +11,34 @@ const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
+  const isProduction = process.env.NODE_ENV === 'production';
 
-  // Initialize MySQL database connection
+  // Production must never silently start with missing database configuration.
+  if (isProduction) {
+    const required = ['DB_HOST', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD', 'ADMIN_JWT_SECRET', 'USER_AUTH_SECRET'];
+    const missing = required.filter((key) => !process.env[key]?.trim());
+    if (missing.length > 0) {
+      throw new Error(`[TapEmpire] FATAL: Missing required production environment variables: ${missing.join(', ')}`);
+    }
+  }
+
+  // Initialize MySQL database connection. A production database failure is fatal.
   try {
     await db.init();
     console.log('[TapEmpire] MySQL database engine initialized successfully.');
   } catch (err: any) {
-    console.error('[TapEmpire] Warning: Database connection error on startup:', err.message);
+    console.error('[TapEmpire] Database connection error on startup:', err.message);
+    if (isProduction) {
+      process.exitCode = 1;
+      throw err;
+    }
   }
 
-  // Standard middleware
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+  app.use(express.json({ limit: '256kb' }));
+  app.use(express.urlencoded({ extended: true, limit: '256kb' }));
 
-  // Real Database-Aware Health Check Endpoint
-  app.get('/api/health', async (req, res) => {
+  app.get('/api/health', async (_req, res) => {
     let dbStatus = 'disconnected';
     let latencyMs = 0;
     try {
@@ -39,7 +51,7 @@ async function startServer() {
       dbStatus = `error: ${err.message}`;
     }
 
-    res.json({
+    res.status(dbStatus === 'connected' ? 200 : 503).json({
       status: dbStatus === 'connected' ? 'ok' : 'degraded',
       database: dbStatus,
       database_latency_ms: latencyMs,
@@ -48,11 +60,9 @@ async function startServer() {
     });
   });
 
-  // Mount API routes
   app.use('/api', apiRouter);
 
-  // Vite middleware for development vs static build in production
-  if (process.env.NODE_ENV !== 'production') {
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -67,8 +77,11 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[TapEmpire] Full-stack Server running on http://0.0.0.0:${PORT}`);
+    console.log(`[TapEmpire] Full-stack Server running on port ${PORT}`);
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('[TapEmpire] Fatal startup error:', err);
+  process.exit(1);
+});
