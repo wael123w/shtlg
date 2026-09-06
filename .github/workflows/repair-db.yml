@@ -17,11 +17,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Restore and harden database engine
+      - name: Harden database configuration
         shell: bash
         run: |
           set -euo pipefail
-          git show d2a7907313a5eecd705fbbe8db4f89a56f1ce7b8:server/db.ts > server/db.ts
           python3 - <<'PY'
           from pathlib import Path
           p = Path('server/db.ts')
@@ -43,11 +42,16 @@ jobs:
           if old not in s:
               raise SystemExit('Expected DB fallback block was not found')
           p.write_text(s.replace(old, new, 1))
-          if len(p.read_text()) < 50000:
-              raise SystemExit('db.ts unexpectedly small after repair')
+          if 'tap_user' in p.read_text() or "'127.0.0.1'" in p.read_text():
+              raise SystemExit('Database fallback credentials remain')
           PY
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add server/db.ts
+          if git diff --cached --quiet; then
+            echo "Database configuration is already hardened."
+            exit 0
+          fi
           git commit -m "fix: require explicit database configuration"
           git push origin HEAD:main
