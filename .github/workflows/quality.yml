@@ -1,0 +1,45 @@
+name: Tab Empire Quality Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run lint
+
+      - name: Production build
+        run: npm run build
+
+      - name: Static security scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'Scanning for obvious demo/mock/fake persistence and hardcoded production secrets...'
+          if grep -RInE --exclude-dir=node_modules --exclude-dir=.git --exclude='*.lock' \
+            'seedDemoUser|data_store\.json|MOCK_|FAKE_|SIMULATED|simulation-only|SuperAdminPass|AdminSecurePass|prod_secret_admin_key|tapempire_user_auth_secret_token' .; then
+            echo 'ERROR: suspicious demo/mock/fallback secret pattern found.'
+            exit 1
+          fi
+          echo 'Static security scan passed.'
