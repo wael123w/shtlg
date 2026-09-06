@@ -19,7 +19,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Unpack source archive
+      - name: Unpack source archive when present
         shell: bash
         run: |
           set -euo pipefail
@@ -27,19 +27,17 @@ jobs:
           TMP_DIR=".unpack_tmp"
 
           if [ ! -f "$ARCHIVE" ]; then
-            echo "ERROR: $ARCHIVE not found."
-            exit 1
+            echo "No source archive present; repository already contains the extracted application. Nothing to unpack."
+            exit 0
           fi
 
           rm -rf "$TMP_DIR"
           mkdir -p "$TMP_DIR"
           unzip -q "$ARCHIVE" -d "$TMP_DIR"
 
-          # Remove macOS metadata.
           find "$TMP_DIR" -type d -name '__MACOSX' -prune -exec rm -rf {} + || true
           find "$TMP_DIR" -type f -name '.DS_Store' -delete || true
 
-          # Detect a single top-level directory and flatten it when appropriate.
           shopt -s dotglob nullglob
           ITEMS=("$TMP_DIR"/*)
           if [ ${#ITEMS[@]} -eq 0 ]; then
@@ -52,16 +50,12 @@ jobs:
             SOURCE_DIR="${ITEMS[0]}"
           fi
 
-          # Preserve repository control files and unpack the application files into root.
           find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -exec cp -a {} . \;
           rm -rf "$TMP_DIR"
-
+          rm -f "$ARCHIVE"
           echo "Archive unpacked successfully."
 
-      - name: Remove archive from working tree
-        run: rm -f tapempire---telegram-tap-to-earn-platform.zip
-
-      - name: Commit extracted source
+      - name: Commit extracted source if changed
         shell: bash
         run: |
           set -euo pipefail
