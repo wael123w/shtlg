@@ -17,13 +17,37 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Restore complete db.ts from verified source commit
+      - name: Restore and harden database engine
+        shell: bash
         run: |
           set -euo pipefail
           git show d2a7907313a5eecd705fbbe8db4f89a56f1ce7b8:server/db.ts > server/db.ts
-          test "$(wc -c < server/db.ts)" -gt 50000
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('server/db.ts')
+          s = p.read_text()
+          old = """      const host = process.env.DB_HOST || '127.0.0.1';
+      const port = Number(process.env.DB_PORT) || 3306;
+      const database = process.env.DB_DATABASE || 'tapempire';
+      const user = process.env.DB_USERNAME || 'tap_user';
+      const password = process.env.DB_PASSWORD || '';"""
+          new = """      const required = ['DB_HOST', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD'].filter((key) => !process.env[key]?.trim());
+      if (required.length > 0) {
+        throw new Error(`Database configuration is incomplete. Missing: ${required.join(', ')}`);
+      }
+      const host = process.env.DB_HOST!.trim();
+      const port = Number(process.env.DB_PORT) || 3306;
+      const database = process.env.DB_DATABASE!.trim();
+      const user = process.env.DB_USERNAME!.trim();
+      const password = process.env.DB_PASSWORD!;"""
+          if old not in s:
+              raise SystemExit('Expected DB fallback block was not found')
+          p.write_text(s.replace(old, new, 1))
+          if len(p.read_text()) < 50000:
+              raise SystemExit('db.ts unexpectedly small after repair')
+          PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add server/db.ts
-          git commit -m "repair: restore complete database engine"
+          git commit -m "fix: require explicit database configuration"
           git push origin HEAD:main
