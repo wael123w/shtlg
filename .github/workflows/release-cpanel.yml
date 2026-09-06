@@ -3,6 +3,7 @@ name: Build cPanel Production Package
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - 'package.json'
       - 'package-lock.json'
@@ -15,7 +16,7 @@ on:
       - '.github/workflows/release-cpanel.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   NODE_VERSION: '20.19.4'
@@ -26,14 +27,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
@@ -44,6 +42,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+
           p = Path('server/db.ts')
           s = p.read_text()
           old = """      const host = process.env.DB_HOST || '127.0.0.1';
@@ -68,18 +67,38 @@ jobs:
 
           p = Path('src/components/AdminDashboard.tsx')
           s = p.read_text()
-          replacements = {
-              "useState('superadmin')": "useState('')",
-              "useState('SuperAdminPass2026!')": "useState('')",
-              "placeholder=\"superadmin\"": "placeholder=\"Admin username or email\"",
-          }
-          for old, new in replacements.items():
-              s = s.replace(old, new)
-          s = s.replace("          <div className=\"pt-3 border-t border-white/10 text-[10px] text-slate-400 space-y-1\">\n            <p className=\"font-semibold text-slate-300\">Default Credentials:</p>\n            <p className=\"font-mono text-cyan-400/90\">Username: <span className=\"text-white\">superadmin</span> | Password: <span className=\"text-white\">SuperAdminPass2026!</span></p>\n            <p className=\"font-mono text-cyan-400/90\">Or Moderator: <span className=\"text-white\">moderator</span> | Password: <span className=\"text-white\">ModSecurePass2026!</span></p>\n          </div>\n", "")
+          s = s.replace("useState('superadmin')", "useState('')")
+          s = s.replace("useState('SuperAdminPass2026!')", "useState('')")
+          s = s.replace('placeholder="superadmin"', 'placeholder="Admin username or email"')
           s = s.replace("const txHash = prompt('Enter Blockchain / Payout Transaction Hash:', '0x' + Math.random().toString(16).substring(2, 22));", "const txHash = prompt('Enter Blockchain / Payout Transaction Hash:');")
+          import re
+          s = re.sub(r'\n\s*<div className="pt-3 border-t border-white/10 text-\[10px\] text-slate-400 space-y-1">.*?</div>\n', '\n', s, count=1, flags=re.S)
           p.write_text(s)
           if 'SuperAdminPass2026!' in p.read_text() or 'ModSecurePass2026!' in p.read_text():
               raise SystemExit('Hardcoded admin credentials remain')
+
+          p = Path('src/components/WebInstaller.tsx')
+          s = p.read_text()
+          replacements = {
+              "db_host: 'localhost'": "db_host: ''",
+              "db_name: 'tapempire_db'": "db_name: ''",
+              "db_user: 'cpanel_user'": "db_user: ''",
+              "db_pass: 'StrongPassword123!'": "db_pass: ''",
+              "telegram_bot_token: '123456789:ABCdefGhIJKlmNoPQRstuVWXyz'": "telegram_bot_token: ''",
+              "telegram_bot_username: 'TapEmpireGameBot'": "telegram_bot_username: ''",
+              "admin_username: 'admin'": "admin_username: ''",
+              "admin_email: 'admin@tapempire.io'": "admin_email: ''",
+              "admin_password: 'SuperSecretAdminPass123!'": "admin_password: ''",
+          }
+          for old, new in replacements.items():
+              s = s.replace(old, new)
+          p.write_text(s)
+
+          p = Path('server.ts')
+          s = p.read_text()
+          s = s.replace("import { fileURLToPath } from 'url';\n", '')
+          s = s.replace("const __filename = fileURLToPath(import.meta.url);\nconst __dirname = path.dirname(__filename);\n\n", '')
+          p.write_text(s)
           PY
 
       - name: Type check
@@ -103,39 +122,33 @@ jobs:
           if [ -f package-lock.json ]; then cp package-lock.json release/package-lock.json; fi
           [ -f .env.example ] && cp .env.example release/.env.example || true
           [ -f README.md ] && cp README.md release/README.md || true
-          rm -rf release/node_modules/.cache release/node_modules/*/.cache 2>/dev/null || true
           cp -R node_modules release/node_modules
           cat > release/START.txt <<'EOF'
-          Tap Empire - cPanel Node.js Production Package
+Tap Empire - cPanel Node.js Production Package
 
-          Startup file: dist/server.cjs
-          Application mode: Production
-          Required Node.js: 20.15+
+Startup file: dist/server.cjs
+Application mode: Production
+Required Node.js: 20.15+
 
-          This package already contains the production build and production dependencies.
-          Do not run npm install on the hosting account.
+This package already contains the production build and production dependencies.
+Do not run npm install on the hosting account.
 
-          Configure the environment variables in the cPanel Node.js Application UI,
-          create the MySQL database/user in cPanel, restart the application, then open:
-          https://YOUR-DOMAIN/install
-          EOF
+Configure environment variables in the cPanel Node.js Application UI,
+create the MySQL database/user in cPanel, restart the application, then open:
+https://YOUR-DOMAIN/install
+EOF
           cd release
           zip -qr ../tap-empire-cpanel-production.zip .
           cd ..
           ls -lh tap-empire-cpanel-production.zip
 
-      - name: Commit production hardening
+      - name: Verify package contents
         shell: bash
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add server/db.ts src/components/AdminDashboard.tsx
-          if git diff --cached --quiet; then
-            echo 'No hardening changes to commit.'
-          else
-            git commit -m 'fix: remove production database and admin credential fallbacks'
-            git push origin HEAD:main
-          fi
+          set -euo pipefail
+          unzip -l tap-empire-cpanel-production.zip | grep -E 'dist/server\.cjs|dist/index|node_modules/|package\.json' | head -40
+          unzip -p tap-empire-cpanel-production.zip package.json >/dev/null
+          unzip -p tap-empire-cpanel-production.zip dist/server.cjs | grep -q 'listen'
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
