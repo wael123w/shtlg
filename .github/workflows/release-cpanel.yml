@@ -1,0 +1,146 @@
+name: Build cPanel Production Package
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'server.ts'
+      - 'server/**'
+      - 'src/**'
+      - 'index.html'
+      - 'vite.config.*'
+      - 'tsconfig.json'
+      - '.github/workflows/release-cpanel.yml'
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '20.19.4'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Production hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('server/db.ts')
+          s = p.read_text()
+          old = """      const host = process.env.DB_HOST || '127.0.0.1';
+      const port = Number(process.env.DB_PORT) || 3306;
+      const database = process.env.DB_DATABASE || 'tapempire';
+      const user = process.env.DB_USERNAME || 'tap_user';
+      const password = process.env.DB_PASSWORD || '';"""
+          new = """      const required = ['DB_HOST', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD'].filter((key) => !process.env[key]?.trim());
+      if (required.length > 0) {
+        throw new Error(`Database configuration is incomplete. Missing: ${required.join(', ')}`);
+      }
+      const host = process.env.DB_HOST!.trim();
+      const port = Number(process.env.DB_PORT) || 3306;
+      const database = process.env.DB_DATABASE!.trim();
+      const user = process.env.DB_USERNAME!.trim();
+      const password = process.env.DB_PASSWORD!;"""
+          if old in s:
+              p.write_text(s.replace(old, new, 1))
+          s = p.read_text()
+          if 'tap_user' in s or "'127.0.0.1'" in s:
+              raise SystemExit('Database fallback credentials remain')
+
+          p = Path('src/components/AdminDashboard.tsx')
+          s = p.read_text()
+          replacements = {
+              "useState('superadmin')": "useState('')",
+              "useState('SuperAdminPass2026!')": "useState('')",
+              "placeholder=\"superadmin\"": "placeholder=\"Admin username or email\"",
+          }
+          for old, new in replacements.items():
+              s = s.replace(old, new)
+          s = s.replace("          <div className=\"pt-3 border-t border-white/10 text-[10px] text-slate-400 space-y-1\">\n            <p className=\"font-semibold text-slate-300\">Default Credentials:</p>\n            <p className=\"font-mono text-cyan-400/90\">Username: <span className=\"text-white\">superadmin</span> | Password: <span className=\"text-white\">SuperAdminPass2026!</span></p>\n            <p className=\"font-mono text-cyan-400/90\">Or Moderator: <span className=\"text-white\">moderator</span> | Password: <span className=\"text-white\">ModSecurePass2026!</span></p>\n          </div>\n", "")
+          s = s.replace("const txHash = prompt('Enter Blockchain / Payout Transaction Hash:', '0x' + Math.random().toString(16).substring(2, 22));", "const txHash = prompt('Enter Blockchain / Payout Transaction Hash:');")
+          p.write_text(s)
+          if 'SuperAdminPass2026!' in p.read_text() or 'ModSecurePass2026!' in p.read_text():
+              raise SystemExit('Hardcoded admin credentials remain')
+          PY
+
+      - name: Type check
+        run: npm run lint
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Remove development dependencies
+        run: npm prune --omit=dev --no-audit --no-fund
+
+      - name: Create cPanel package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release tap-empire-cpanel-production.zip
+          mkdir -p release
+          cp -R dist release/dist
+          cp -R server release/server
+          cp package.json release/package.json
+          if [ -f package-lock.json ]; then cp package-lock.json release/package-lock.json; fi
+          [ -f .env.example ] && cp .env.example release/.env.example || true
+          [ -f README.md ] && cp README.md release/README.md || true
+          rm -rf release/node_modules/.cache release/node_modules/*/.cache 2>/dev/null || true
+          cp -R node_modules release/node_modules
+          cat > release/START.txt <<'EOF'
+          Tap Empire - cPanel Node.js Production Package
+
+          Startup file: dist/server.cjs
+          Application mode: Production
+          Required Node.js: 20.15+
+
+          This package already contains the production build and production dependencies.
+          Do not run npm install on the hosting account.
+
+          Configure the environment variables in the cPanel Node.js Application UI,
+          create the MySQL database/user in cPanel, restart the application, then open:
+          https://YOUR-DOMAIN/install
+          EOF
+          cd release
+          zip -qr ../tap-empire-cpanel-production.zip .
+          cd ..
+          ls -lh tap-empire-cpanel-production.zip
+
+      - name: Commit production hardening
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add server/db.ts src/components/AdminDashboard.tsx
+          if git diff --cached --quiet; then
+            echo 'No hardening changes to commit.'
+          else
+            git commit -m 'fix: remove production database and admin credential fallbacks'
+            git push origin HEAD:main
+          fi
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tap-empire-cpanel-production
+          path: tap-empire-cpanel-production.zip
+          if-no-files-found: error
+          retention-days: 14
