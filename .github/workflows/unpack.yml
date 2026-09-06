@@ -1,0 +1,78 @@
+name: Unpack Tab Empire
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Unpack source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="tapempire---telegram-tap-to-earn-platform.zip"
+          TMP_DIR=".unpack_tmp"
+
+          if [ ! -f "$ARCHIVE" ]; then
+            echo "ERROR: $ARCHIVE not found."
+            exit 1
+          fi
+
+          rm -rf "$TMP_DIR"
+          mkdir -p "$TMP_DIR"
+          unzip -q "$ARCHIVE" -d "$TMP_DIR"
+
+          # Remove macOS metadata.
+          find "$TMP_DIR" -type d -name '__MACOSX' -prune -exec rm -rf {} + || true
+          find "$TMP_DIR" -type f -name '.DS_Store' -delete || true
+
+          # Detect a single top-level directory and flatten it when appropriate.
+          shopt -s dotglob nullglob
+          ITEMS=("$TMP_DIR"/*)
+          if [ ${#ITEMS[@]} -eq 0 ]; then
+            echo "ERROR: Archive is empty."
+            exit 1
+          fi
+
+          SOURCE_DIR="$TMP_DIR"
+          if [ ${#ITEMS[@]} -eq 1 ] && [ -d "${ITEMS[0]}" ]; then
+            SOURCE_DIR="${ITEMS[0]}"
+          fi
+
+          # Preserve repository control files and unpack the application files into root.
+          find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -exec cp -a {} . \;
+          rm -rf "$TMP_DIR"
+
+          echo "Archive unpacked successfully."
+
+      - name: Remove archive from working tree
+        run: rm -f tapempire---telegram-tap-to-earn-platform.zip
+
+      - name: Commit extracted source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No extracted changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: unpack Tab Empire source archive"
+          git push origin HEAD:main
